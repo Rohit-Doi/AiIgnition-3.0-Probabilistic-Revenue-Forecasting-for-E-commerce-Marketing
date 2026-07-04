@@ -1,0 +1,12 @@
+# Dependencies
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+features.parquet
+channel_features.parquet
+campaign_features.parquet
+validation_report.parquet
+*.egg-info/
+.DS_Store
