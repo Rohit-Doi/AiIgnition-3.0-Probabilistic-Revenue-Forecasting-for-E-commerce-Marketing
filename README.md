@@ -42,6 +42,10 @@ We let the judges score these against the criteria rather than scoring them ours
 
 ### Execution
 
+**Note for Windows Users:** The scoring pipeline is a bash script (`run.sh`). You must run this using a bash-compatible terminal like **Git Bash** (not PowerShell or Command Prompt). 
+
+> **Environment Setup Note:** If you run `pip install -r requirements.txt` globally, `run.sh` will auto-detect your Python environment. You do *not* need to manually activate a `.venv` for the scoring script to work. It will automatically find the Python installation that contains the required packages.
+
 ```bash
 # 1. Install dependencies
 pip install -r requirements.txt
@@ -56,6 +60,7 @@ python -m src.train --optuna
 python -m src.train --cv
 
 # 3. Run offline scoring pipeline (submission entry point)
+# Run this exactly as written in Git Bash (or Linux/Mac terminal)
 bash run.sh ./data ./pickle/model.pkl ./output/predictions.csv
 
 # 4. Launch interactive dashboard
