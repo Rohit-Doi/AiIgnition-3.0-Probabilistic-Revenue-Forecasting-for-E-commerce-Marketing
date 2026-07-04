@@ -16,20 +16,23 @@ This hackathon challenges participants to build a practical AI-assisted forecast
 
 ---
 
-## Product Features Built
+## 🌟 Unique Dashboard Features & Visualizations
 
-The dashboard includes the following, each tied to a specific evaluation criterion in the brief:
+We built AIgnition 3.0 to be a highly operational tool for marketing agencies. To stand out, we went beyond standard tables and implemented advanced, interactive visualizations that directly answer the hackathon's prompt to "use additional functions to forecast revenue based on different media budgets":
 
-| Feature | Brief requirement it addresses |
-|---|---|
-| Risk Box (LLM-flagged anomalies) | "AI-assisted causal inference layer... anomaly interpretation" |
-| Interactive Forecast Chat | "AI-generated business insights" |
-| Agency Report Export (CSV) | "Operational usefulness for agencies" |
-| Efficient Frontier scatter | "Use additional functions to forecast revenue based on different media budgets" |
-| Spend Saturation Heatmap | Same as above |
-| Global Feature Importance | "Business interpretability of forecast" |
+### 1. The Budget Simulator & Spend-Response Curves
+Instead of scaling revenue linearly (which ignores diminishing returns), the dashboard features a dedicated **Budget Simulator**. 
+* **Hill Curve Saturation:** The model fits mathematical S-curves (Hill functions) to historical data for every campaign type to find the exact "K-value" saturation point (where spending more money stops generating proportional revenue).
+* **Interactive What-Ifs:** Adjusting the budget slider dynamically passes new spend scenarios into these curves, showing realistic P10/P50/P90 revenue impacts alongside the status-quo forecast.
 
-We let the judges score these against the criteria rather than scoring them ourselves.
+### 2. The Efficient Frontier Scatter Plot
+Also located in the Budget Simulator tab, this graph visualizes simulated revenue vs. spend for every campaign type, with bubble size representing ROAS. This instantly tells an agency exactly where their next marginal dollar of budget will work the hardest.
+
+### 3. Portfolio Money Flow (Sankey Diagram)
+A dynamic flow chart that visually maps the pipeline from **Total Budget → Channel Allocation → Projected Revenue**. The thickness of the bands instantly communicates which channels are highly efficient (thick revenue band, thin spend band) and which are burning cash.
+
+### 4. Groq-Powered "Chat With Your Forecast"
+Integrated a Llama 3.3 70B reasoning layer (via Groq) that doesn't just read raw data, but interprets the model's marginal ROAS derivatives and feature importances. Users can type questions like *"If I move $5k from Meta to Google Search, what happens?"* and get strategic, CMO-level answers based on the current scenario.
 
 ---
 
@@ -39,6 +42,14 @@ We let the judges score these against the criteria rather than scoring them ours
 - **Python 3.11+**
 - Dependencies rigidly pinned in `requirements.txt`
 - No internet connection required during offline scoring execution.
+
+### Optional: AI Insights Configuration (Groq)
+The Streamlit dashboard features an "AI Insights" tab that generates strategic explanations of the forecasts using Groq's Llama 3.3 70B model. To enable this:
+1. Get a free API key from **[console.groq.com](https://console.groq.com/keys)**
+2. Rename `.env.example` to `.env`
+3. Paste your key: `GROQ_API_KEY=your_key_here`
+
+*(Note: The `run.sh` offline scoring script does not use this key or make any network calls. It is strictly for the frontend dashboard.)*
 
 ### Execution
 
