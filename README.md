@@ -16,6 +16,19 @@ This hackathon challenges participants to build a practical AI-assisted forecast
 
 ---
 
+## 🏆 Why Our Solution is Different — Key Contributions
+
+| # | Innovation | What Makes It Different |
+|---|---|---|
+| 1 | **Direct Horizon Residual Boosting** | Trains one model per horizon (30/60/90 d) — eliminates recursive error compounding that cripples standard time-series stacks |
+| 2 | **MACD Statistical Anchoring** | Revenue residuals are predicted *against* a momentum anchor (fast/slow EMA ratio), making the boosting task far more bounded and stable |
+| 3 | **Binary Zero-Inflation Gating** | A LightGBM classifier gates every forecast with asymmetric probability thresholds, handling the zero-revenue campaigns that break standard regressors |
+| 4 | **Saturation-Aware Budget Simulation** | Hill/S-curve saturation fitted per campaign type — "What-If" sliders show realistic diminishing returns, not naive linear scaling |
+| 5 | **Groq CMO Layer** | LLM receives marginal ROAS derivatives + SHAP-like importances — strategic recommendations, not just raw data summaries |
+| 6 | **Verifiable No-Leakage Guarantee** | `assert max_train_time < min_val_time` crashes the pipeline if the temporal split is ever violated — not just a claim |
+
+---
+
 ## 🌟 Unique Dashboard Features & Visualizations
 
 We built AIgnition 3.0 to be a highly operational tool for marketing agencies. To stand out, we went beyond standard tables and implemented advanced, interactive visualizations that directly answer the hackathon's prompt to "use additional functions to forecast revenue based on different media budgets":
@@ -83,73 +96,28 @@ uvicorn src.api:app --reload --port 8000
 
 ---
 
-## 🧠 Comprehensive Methodology & Architecture
+---
 
-AIgnition v3 moves away from traditional recursive single-target forecasting in favor of a **Direct Horizon Residual Boosting System** with a **Dual-Engine Architecture**.
+## 🧠 How It Works — Architecture in Brief
 
-### 1. Data Harmonization & Verification
-We map Google, Bing, and Meta CSVs to a canonical schema. A crucial data assumption was made regarding Meta Ads: we treat the `conversion` field as a **revenue proxy**, as statistical tests revealed fractional values and numbers significantly larger than clicks, suggesting it acts as a value metric.
+![AIgnition Pipeline Architecture](docs/pipeline_architecture.png)
 
-### Automated Cleaning Pipeline (src/validate.py & src/load_data.py)
-* **Temporal Filtering:** All unparseable and future dates relative to execution time are dropped.
-* **Constraint Enforcement:** Negative spend and revenue values are clipped to 0.0.
-* **Budget Imputation:** Missing daily budgets are forward-filled using campaign historical means.
-* **Strict Deduplication:** Duplicate rows based on (channel, campaign_id, date) are dropped, preserving only the first occurrence to prevent revenue double-counting.
-* **Anomaly Flagging:** Rows exhibiting zero spend but positive revenue (or vice versa) are flagged as `flag_zero_spend_nonzero_revenue` for downstream exclusion from the quantile models.
+AIgnition uses a **Dual-Engine, Direct Horizon Residual Boosting** system. The four core ideas:
 
-### 2. The Core Prediction Target — Log-Space Residuals
-Instead of predicting raw revenue (extremely volatile) or ROAS as the primary output, our Stage 2 quantile models predict **log-transformed revenue residuals** against a MACD statistical anchor:
-- The MACD anchor (fast/slow EMA ratio) captures the bulk of the revenue signal from momentum.
-- LightGBM models predict the *residual* between the anchor and the actual forward-summed revenue, in log1p space with a shift constant to handle negatives.
-- Predictions are exponentiated and re-anchored to recover the final revenue forecast.
-- **ROAS is computed post-prediction** as a derived KPI (predicted revenue ÷ proposed spend) for budget optimisation and the AI insights layer. It is not the raw model target.
+1. **MACD Anchoring + Residual Boosting** — Instead of predicting raw revenue (extremely volatile), LightGBM learns the *residual* between a momentum anchor (fast/slow EMA ratio) and the actual forward-summed revenue in log-space. The anchor handles bulk signal; the model handles fine corrections.
+2. **Binary Zero-Inflation Gate** — A `LGBMClassifier` per group predicts `P(revenue > 0)` with asymmetric thresholds before the quantile regressor runs. This drove coverage from 62.9% → 85.7%.
+3. **Direct Horizon Models** — Separate models trained for 30 / 60 / 90-day targets eliminate recursive error compounding entirely.
+4. **Conformal Calibration** — A post-training empirical multiplier ensures P10–P90 intervals hit the 80% coverage target on the validation fold.
 
-**Why this architecture?** Residuals against a strong anchor are much more bounded and stable than raw revenue. This prevents extreme extrapolations when simulating large budget shifts in the dashboard.
-
-### 3. Direct Horizon Residual Boosting
-Instead of recursively predicting week-by-week (which compounds errors), we predict 30-day, 60-day, and 90-day targets directly.
-- **Statistical Anchoring (MACD):** We compute the ratio between a 2-week fast EMA and an 8-week slow EMA to instantly detect momentum drops.
-- **Residual Boosting:** The LightGBM model predicts the residual difference between this anchor and the target.
-- **Loss Functions:** The P50 median model uses **Huber Loss** to remain robust against massive outlier weeks, while P10 and P90 use standard Quantile loss.
-
-### LightGBM Hyperparameter Tuning (Optuna)
-Default LightGBM parameters are insufficient for multi-horizon quantile regression. We utilized Optuna (50 trials, temporal 70/30 split) to optimize directly for WAPE.
-
-| Parameter | Initial (Default) | Tuned (Optuna Best) | Impact |
-|---|---|---|---|
-| learning_rate | 0.10 | 0.045 | Smoother convergence on residuals |
-| num_leaves | 31 | 15 | Reduced overfitting on noisy micro-campaigns |
-| max_depth | -1 | 4 | Forced generalization across seasonal boundaries |
-| min_data_in_leaf | 20 | 45 | Stabilized variance in sparse Bing/Meta groups |
-| lambda_l2 | 0.0 | 0.85 | Aggressive regularization against Black Friday spikes |
-
-### 4. Cross-Platform Halo Features
-Our models do not treat channels in isolation. We specifically engineered features to capture multi-touch attribution impacts. For example, `meta_spend_roll4` (4-week rolling Meta spend) was added because prospecting on Meta strongly correlates with branded search queries on Google 1-2 weeks later.
-
-### 5. Spend-Response Curves & Simulation
-For budget simulation ("What-If" scenarios), we fit four functional forms per campaign type to map diminishing returns:
-1. **Linear** (`R = aS + b`)
-2. **Saturating Exponential** (`R = a(1 - e^{-S/b})`)
-3. **Logarithmic** (`R = a ln(S) + b`)
-4. **Hill / S-Curve** (`R = Vmax·Sⁿ/(kⁿ + Sⁿ)`)
-
-The best-fitting mathematical curve is selected automatically, ensuring budget re-allocation scenarios realistically degrade as spend increases.
-
-### 6. Monte Carlo Horizon Forecasting
-Forecasts for 30/60/90-day windows use Monte Carlo sampling. We draw 10,000 samples from an implied log-normal distribution matching the P10/P50/P90 outputs, propagating uncertainty accurately through time.
+> Full data assumptions, feature engineering (55+ features), Optuna tuning details, and the complete ablation study are in [`docs/methodology.md`](docs/methodology.md).
 
 ---
 
 ## 📐 Mathematical Metric Definitions
 
-Before viewing the performance results, here is exactly how we define and mathematically calculate our evaluation metrics:
-
-| Metric | Formula | Business Purpose |
-|---|---|---|
-| WAPE (Primary) | $\frac{\sum\|y - \hat{y}\|}{\sum y}$ | Dollar-weighted accuracy. Penalizes errors on high-revenue campaigns appropriately. |
-| SMAPE | $\frac{1}{n} \sum \frac{\|y - \hat{y}\|}{(\|y\| + \|\hat{y}\|)/2}$ | Symmetric percentage error for evaluating relative channel performance. |
-| Coverage | $\frac{1}{n} \sum I(P_{10} \le y \le P_{90})$ | Proves probabilistic confidence intervals represent mathematical reality. |
-| Pinball Loss | $\max(q(y - \hat{y}), (q - 1)(y - \hat{y}))$ | The exact objective function optimized by the LightGBM models. |
+> Full formulae, derivations, and metric rationale are in [`docs/methodology.md`](docs/methodology.md#-mathematical-metric-definitions). Below is a brief reference:
+> **WAPE** (primary) = Σ|y − ŷ| / Σy · 100 — dollar-weighted error that correctly penalises large-revenue misses.
+> **Coverage** = fraction of actuals falling inside the P10–P90 band (target ≥ 80%).
 
 ---
 
@@ -173,6 +141,18 @@ The brief asks for: probabilistic forecasting, multi-horizon outputs, AI-assiste
 
 ## 📊 Performance Against the Baseline
 
+### 📋 At-a-Glance Summary
+
+| Metric | Value | Notes |
+|---|---|---|
+| **WAPE (channel-level)** | **35.8%** | Aggregated channel × campaign-type (70 rows) — planning resolution |
+| **WAPE (campaign-level)** | 89.0% | Per-campaign (414 rows) — directional signal, not precision |
+| **P10–P90 Coverage** | **85.7%** | Exceeds 80% target; conformal-calibrated |
+| **Beat lag_1 baseline by** | **+64.2 pp** | Standard hardest-to-beat time-series baseline |
+| **Forecast Horizons** | 30 / 60 / 90 days | Direct (non-recursive) multi-horizon models |
+| **AI Features** | ROAS derivatives, SHAP importances, spend-response curves | Fed to Groq Llama 3.3 70B for strategic insights |
+
+---
 
 **Primary Metric: WAPE (Weighted Absolute Percentage Error)** — weights errors by actual revenue size, so large-revenue weeks dominate, which is the correct metric for ecommerce.
 
@@ -203,40 +183,23 @@ We beat all three. We lead with lag_1 because it's the conventional benchmark in
 
 ---
 
-## 🎯 Confidence Interval Coverage
-
-We utilize quantile loss functions (P10/P50/P90) to produce probabilistic confidence intervals. In backtesting, our empirical coverage reached **85.7%** — exceeding the 80% target.
-
-Key architectural features that drive this coverage:
-- **Binary zero-inflation classifier**: LGBMClassifier gates predictions with asymmetric thresholds — P10 only shown when confident campaign is active (prob > 0.90), P90 shown even when uncertain (prob > 0.10)
-- **Q90 outlier clipping**: Q90 training targets clipped at 95th percentile, preventing Black Friday outliers from inflating upper bounds unrealistically
-- **Conformal calibration**: Exact numerical multiplier computed on validation fold to hit target coverage
-- **Fully reproducible**: All LightGBM random seeds locked (`seed`, `bagging_seed`, `feature_fraction_seed` = 42) — every run from the same data produces identical output
-
 ---
+
+
 
 ## 🤖 Strategic AI Insights (Groq Integration)
 
-AIgnition doesn't just display numbers; it acts as an automated Chief Marketing Officer (CMO). Our LLM integration (Groq `llama-3.3-70b-versatile`) generates intelligent, strategic recommendations on the Streamlit dashboard.
-
-**How recommendations are generated:**
-The LLM does *not* blindly read the raw dataset. Instead, our deterministic Python pipeline computes structural inputs and feeds them to the LLM. These inputs include:
-- Probabilistic forecasted ROAS vs historical baseline efficiency.
-- Calculated spend-response curves (identifying exact points of diminishing returns).
-- Local feature importance (SHAP-like values) to explain trend drivers.
+The LLM does **not** read raw data. Our Python pipeline computes and feeds it: marginal ROAS derivatives, spend-response saturation curves, and SHAP-like feature importances. This grounds every recommendation in the model's actual math.
 
 **4 Distinct AI Functions:**
-1. **Forecast Explanation:** Explains *why* the P50 revenue is shifting.
-2. **Anomaly Interpretation:** Investigates sudden drops or spikes in the 10-week holdout.
-3. **Budget Recommendation:** Recommends specific cross-channel budget shifts based on curve saturation.
-4. **Portfolio Insight:** Summarizes the overall health of the multi-channel marketing mix.
+1. **Forecast Explanation** — explains *why* the P50 revenue is shifting
+2. **Anomaly Interpretation** — investigates sudden drops or spikes in the holdout
+3. **Budget Recommendation** — recommends cross-channel shifts based on curve saturation
+4. **Portfolio Insight** — summarises the overall health of the multi-channel marketing mix
 
-*(Note: The Groq API is strictly isolated to the frontend and API layers. The `run.sh` testing pipeline executes fully offline without any network calls, satisfying the hackathon's offline scoring requirement).*
+> The Groq API is strictly isolated to the frontend. The `run.sh` scoring pipeline is fully offline — no network calls, satisfying the hackathon's offline requirement.
 
-### 🖥️ Dashboard Visuals & Shaded Confidence Bands
-The interactive Streamlit dashboard provides a unified view of the portfolio. To visually demonstrate that AIgnition outputs a *probabilistic range* rather than a deterministic single-value forecast, all time-series fan charts feature **shaded P10-P90 confidence bands**. This enables users to immediately grasp the uncertainty spread of any given campaign or channel at a glance.
 
----
 
 ## 📂 Project Structure (The Product)
 

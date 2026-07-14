@@ -1,10 +1,10 @@
 """Train quantile models, backtest on holdout, compare vs baselines.
 
-v3.1 Changes (All-15-Fixes):
-- Fix 4: WAPE is now the PRIMARY printed metric (was SMAPE)
-- --optuna flag: triggers Optuna 50-trial hyperparameter tuning (Fix 12)
-- --cv flag: triggers 3-fold walk-forward cross-validation (Fix 13)
-- ROAS cap updated to 15x throughout (Fix 14)
+v3.1 Changes (Production Version):
+- WAPE is now the PRIMARY printed metric (was SMAPE)
+- --optuna flag: triggers Optuna 50-trial hyperparameter tuning 
+- --cv flag: triggers 3-fold walk-forward cross-validation 
+- ROAS cap updated to 15x throughout 
 - Adds wape_p50 to holdout metrics and all print outputs
 """
 
@@ -102,7 +102,7 @@ def run_backtest(bundle: ModelBundle, test_df: pd.DataFrame) -> dict:
 
     # Promote filtered metrics to primary (overwrite raw with filtered)
     for metric_name in [
-        "wape_p50",      # PRIMARY (Fix 4)
+        "wape_p50",      # PRIMARY 
         "smape_p50",
         "mape_p50",
         "mae_p50",
@@ -132,7 +132,7 @@ def run_backtest(bundle: ModelBundle, test_df: pd.DataFrame) -> dict:
     if by_type_records:
         diag_df = pd.DataFrame(by_type_records).copy()
         diag_df["mae_median_gap"] = diag_df["mae_p50"] - diag_df["median_ae_p50"]
-        # Fix 4: Sort diagnostics by wape_p50 too (add fallback if column missing)
+        # Sort diagnostics by wape_p50 too (add fallback if column missing)
         # NOTE: mae_median_gap is the *primary* sort key, so low-spend groups
         # (e.g. bing|TOTAL, MAE~$447) rarely surface in the top-5 even when
         # their WAPE is poor.  Full per-group data is always in holdout_by_type.csv.
@@ -156,7 +156,7 @@ def run_backtest(bundle: ModelBundle, test_df: pd.DataFrame) -> dict:
     )
     overall["baseline_comparison"] = baseline["comparison"]
     overall["best_baseline"] = baseline["best_baseline"]
-    # Fix 4: Report WAPE improvement as primary improvement metric
+    # Report WAPE improvement as primary improvement metric
     overall["wape_improvement_vs_best_baseline"] = baseline["wape_improvement_vs_best_baseline"]
     overall["smape_improvement_vs_best_baseline"] = baseline["smape_improvement_vs_best_baseline"]
     overall["lightgbm_beats_baseline"] = baseline["lightgbm_beats_baseline"]
@@ -168,7 +168,7 @@ def run_backtest(bundle: ModelBundle, test_df: pd.DataFrame) -> dict:
         "roas_cap": ROAS_CAP,
         "filtered_rows": int(overall.get("filtered_n", len(y_true_a))),
         "total_rows": int(len(y_true_a)),
-        "primary_metric": "WAPE",   # Fix 4: document that WAPE is primary
+        "primary_metric": "WAPE",   # document that WAPE is primary
     }
 
     return overall
@@ -185,7 +185,7 @@ def ablation_daily_vs_weekly(data_dir: Path) -> pd.DataFrame:
         rows.append(
             {
                 "aggregation": freq,
-                "wape_p50": metrics.get("wape_p50", 0),   # PRIMARY (Fix 4)
+                "wape_p50": metrics.get("wape_p50", 0),   # PRIMARY 
                 "smape_p50": metrics.get("smape_p50", 0),
                 "mape_p50": metrics.get("mape_p50", 0),
                 "mae_p50": metrics.get("mae_p50", 0),
@@ -238,8 +238,8 @@ def main():
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument("--model-path", default=str(ROOT / "pickle" / "model.pkl"))
     parser.add_argument("--ablation", action="store_true", help="Run daily vs weekly ablation")
-    parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter tuning (Fix 12)")
-    parser.add_argument("--cv", action="store_true", help="Run 3-fold walk-forward CV (Fix 13)")
+    parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter tuning ")
+    parser.add_argument("--cv", action="store_true", help="Run 3-fold walk-forward CV ")
     args = parser.parse_args()
 
     # Lock all random state for fully reproducible runs
@@ -296,7 +296,7 @@ def main():
             docs / "baseline_comparison.csv", index=False
         )
 
-        # Save CV results if available (Fix 13)
+        # Save CV results if available 
         cv_records = bundle.holdout_metrics.get("cv_results", [])
         if cv_records:
             pd.DataFrame(cv_records).to_csv(docs / "cv_results.csv", index=False)
@@ -314,7 +314,7 @@ def main():
     save_bundle(bundle, args.model_path)
     hm = bundle.holdout_metrics
 
-    # Results printout - WAPE is primary (Fix 4)
+    # Results printout - WAPE is primary 
     print()
     print("=" * 60)
     print("  AIgnition v3.1 - Holdout Backtest Results")
@@ -324,10 +324,10 @@ def main():
     print(f"  Filtered rows:   {hm.get('filtered_n', 'N/A')} / {hm.get('n_predictions', 'N/A')}")
     print(f"  Revenue filter:  >= ${hm.get('revenue_filter_min', 0):,.2f}")
     print(f"  Spend filter:    >= ${hm.get('spend_filter_min', 0):.2f}")
-    print(f"  ROAS cap:        {ROAS_CAP}x (Fix 14)")
+    print(f"  ROAS cap:        {ROAS_CAP}x ")
     print()
     print("  -- PRIMARY METRIC --")
-    print(f"  WAPE  (P50):     {hm.get('wape_p50', 'N/A'):.2f}%  <- PRIMARY (Fix 4)")
+    print(f"  WAPE  (P50):     {hm.get('wape_p50', 'N/A'):.2f}%  <- PRIMARY ")
     print()
     print("  -- SECONDARY METRICS --")
     print(f"  SMAPE (P50):     {hm.get('smape_p50', 'N/A'):.2f}%")
@@ -359,16 +359,16 @@ def main():
     print(f"  Beats baseline:  {hm.get('lightgbm_beats_baseline')}")
     print("=" * 60)
 
-    # Optuna params if used (Fix 12)
+    # Optuna params if used 
     if bundle.optuna_best_params:
         print(f"\n  [Optuna] Tuned params saved to bundle.")
         print(f"  Best params: {bundle.optuna_best_params}")
 
-    # CV results summary if used (Fix 13)
+    # CV results summary if used 
     cv_records = hm.get("cv_results", [])
     if cv_records:
         cv_df = pd.DataFrame(cv_records)
-        print(f"\n  -- WALK-FORWARD CV (Fix 13) --")
+        print(f"\n  -- WALK-FORWARD CV --")
         for _, row in cv_df.iterrows():
             print(f"  Fold {int(row['fold'])}: WAPE={row['wape']:.2f}% | "
                   f"SMAPE={row['smape']:.2f}% | Coverage={row['coverage']:.1f}%")

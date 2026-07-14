@@ -1,22 +1,22 @@
-"""Dual-Engine LightGBM forecasting model — v3.1 (All-15-Fixes).
+"""Dual-Engine LightGBM forecasting model — v3.1 (Production Version).
 
 Architecture (v3.1):
 - Engine A (preserved): MACD-anchored residual boosting for revenue
-- Engine B: LGBMClassifier zero-inflation gate (Fix 2) — asymmetric thresholds
+- Engine B: LGBMClassifier zero-inflation gate — asymmetric thresholds
   P10: prob > 0.90 | P50: prob > 0.40 | P90: prob > 0.10
-- Fix 1: Log1p transform on residuals (shifted to handle negatives)
-- Fix 3: Q90 training targets clipped at 95th percentile
-- Fix 11: Combined channel imbalance + temporal decay sample weights
-- Fix 12: Optuna Bayesian hyperparameter tuning (50 trials, optimise WAPE)
-- Fix 13: Walk-forward 3-fold expanding-window cross-validation
-- Fix 14: Non-crossing enforcement + ROAS cap at 15x
+- Log1p transform on residuals (shifted to handle negatives)
+- Q90 training targets clipped at 95th percentile
+- Combined channel imbalance + temporal decay sample weights
+- Optuna Bayesian hyperparameter tuning (50 trials, optimise WAPE)
+- Walk-forward 3-fold expanding-window cross-validation
+- Non-crossing enforcement + ROAS cap at 15x
 
 Differentiators preserved:
 - MACD momentum anchor (fast/slow EMA ratio on revenue)
 - Monte Carlo quantile reconciliation (10,000 samples)
 - YoY lag features (lag_52, lag_26, yoy_ratio)
 - Cross-platform halo features (meta_spend_roll4/8, portfolio_upper_lower_ratio)
-- Temporal decay weighting (now combined with channel imbalance Fix 11)
+- Temporal decay weighting (now combined with channel imbalance 
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from src.metrics import wape as _wape_metric
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-# Fix 1: Shift constant so residuals are always positive before log1p transform.
+# Shift constant so residuals are always positive before log1p transform.
 # We shift by max plausible negative residual (anchor can overshoot target).
 # Using a fixed large constant is safe — we subtract it back after prediction.
 _RESIDUAL_SHIFT = 50_000.0   # $50k shift — handles even large anchor overshoots
@@ -89,7 +89,7 @@ class ModelBundle:
     quantile_models: dict[str, dict[float, lgb.Booster]] = field(default_factory=dict)
     # Spend quantile models (kept for backwards compat with old bundles)
     spend_models: dict[str, dict[float, lgb.Booster]] = field(default_factory=dict)
-    # Fix 2: Binary zero-inflation classifiers per model key
+    # Binary zero-inflation classifiers per model key
     zero_classifiers: dict[str, lgb.Booster] = field(default_factory=dict)
     # Fallback for sparse groups
     fallback_models: dict[str, FallbackQuantileModel] = field(default_factory=dict)
@@ -108,7 +108,7 @@ class ModelBundle:
     feature_cols: list[str] = field(default_factory=lambda: list(FEATURE_COLS))
     spend_feature_cols: list[str] = field(default_factory=lambda: list(FEATURE_COLS))
 
-    # Fix 12: Best Optuna params
+    # Best Optuna params
     optuna_best_params: dict = field(default_factory=dict)
     
     holdout_metrics: dict = field(default_factory=dict)
@@ -173,7 +173,7 @@ def _encode_categories(
 
 
 def _enforce_quantile_order(preds: dict[str, float]) -> dict[str, float]:
-    """Fix 14: Enforce p10 ≤ p50 ≤ p90 and non-negative predictions."""
+    """Enforce p10 ≤ p50 ≤ p90 and non-negative predictions."""
     p10, p50, p90 = preds["p10"], preds["p50"], preds["p90"]
     p10 = max(0.0, p10)
     p50 = max(p10, p50)
@@ -181,10 +181,10 @@ def _enforce_quantile_order(preds: dict[str, float]) -> dict[str, float]:
     return {"p10": p10, "p50": p50, "p90": p90}
 
 
-# ─── Fix 1: Log transform helpers ────────────────────────────────────────────
+# ─── Log transform helpers ────────────────────────────────────────────
 
 def _to_log_residual(residuals: np.ndarray) -> np.ndarray:
-    """Fix 1: Log1p transform on residuals with shift to handle negatives.
+    """Log1p transform on residuals with shift to handle negatives.
     
     Residuals = target - anchor can be negative when anchor overshoots.
     We shift by _RESIDUAL_SHIFT to guarantee positivity, apply log1p,
@@ -194,7 +194,7 @@ def _to_log_residual(residuals: np.ndarray) -> np.ndarray:
 
 
 def _from_log_residual(log_preds: np.ndarray) -> np.ndarray:
-    """Fix 1: Inverse of _to_log_residual."""
+    """Inverse of _to_log_residual."""
     return np.expm1(log_preds) - _RESIDUAL_SHIFT
 
 
@@ -207,19 +207,19 @@ def _train_engine(
     y_val: np.ndarray,
     sample_weights: np.ndarray,
     lgbm_params: dict,
-    clip_q90_at_percentile: bool = False,   # Fix 3
+    clip_q90_at_percentile: bool = False,   # 
 ) -> dict[float, lgb.Booster]:
     """Train quantile models for one engine (residual prediction).
     
-    Fix 1: y_train is already log-transformed — models are trained in log space.
-    Fix 3: For Q90 model, clip training targets at 95th percentile to prevent
+    y_train is already log-transformed — models are trained in log space.
+    For Q90 model, clip training targets at 95th percentile to prevent
            upper bound inflation from outlier weeks (Black Friday etc).
     """
     models = {}
     for q in QUANTILES:
         y_tr = y_train.copy()
 
-        # Fix 3: Clip Q90 targets at 95th percentile to tighten interval
+        # Clip Q90 targets at 95th percentile to tighten interval
         if q == 0.90 and clip_q90_at_percentile:
             cap = np.percentile(y_tr, Q90_CLIP_PERCENTILE)
             y_tr = np.clip(y_tr, None, cap)
@@ -261,13 +261,13 @@ def _predict_engine(
     preds = {}
     for q in QUANTILES:
         label = f"p{int(q * 100)}"
-        # Fix 1: predictions are in log space — transform back
+        # predictions are in log space — transform back
         log_pred = float(models[q].predict(X)[0])
         preds[label] = float(_from_log_residual(np.array([log_pred]))[0])
     return preds
 
 
-# ─── Fix 12: Optuna hyperparameter tuning ────────────────────────────────────
+# ─── Optuna hyperparameter tuning ────────────────────────────────────
 
 def run_optuna_tuning(
     X_train: pd.DataFrame,
@@ -277,7 +277,7 @@ def run_optuna_tuning(
     timeout: int = OPTUNA_TIMEOUT,
     random_seed: int = RANDOM_SEED,
 ) -> dict:
-    """Fix 12: Bayesian hyperparameter search via Optuna, optimising WAPE.
+    """Bayesian hyperparameter search via Optuna, optimising WAPE.
     
     Uses temporal 70/30 split for fast validation during trials.
     Returns best params dict to override LGBM_PARAMS for all model training.
@@ -348,7 +348,7 @@ def run_optuna_tuning(
     return lgbm_params
 
 
-# ─── Fix 2: Zero-inflation classifier training ───────────────────────────────
+# ─── Zero-inflation classifier training ───────────────────────────────
 
 def _train_zero_classifier(
     X_train: pd.DataFrame,
@@ -356,7 +356,7 @@ def _train_zero_classifier(
     sample_weights: np.ndarray,
     category_maps: dict,
 ) -> lgb.Booster:
-    """Fix 2: LGBMClassifier trained to predict revenue > 0 (is campaign active?).
+    """LGBMClassifier trained to predict revenue > 0 (is campaign active?).
     
     Asymmetric thresholds in predict_group() ensure:
     - P10 (pessimistic): only shows > 0 when very confident active (prob > 0.90)
@@ -387,7 +387,7 @@ def _train_zero_classifier(
     return clf
 
 
-# ─── Fix 13: Walk-forward cross-validation ───────────────────────────────────
+# ─── Walk-forward cross-validation ───────────────────────────────────
 
 def walk_forward_cv(
     panel: pd.DataFrame,
@@ -396,7 +396,7 @@ def walk_forward_cv(
     min_train_weeks: int = 52,
     lgbm_params: dict | None = None,
 ) -> pd.DataFrame:
-    """Fix 13: Expanding-window walk-forward cross-validation (3 folds).
+    """Expanding-window walk-forward cross-validation (3 folds).
     
     Each fold trains on all data up to a cutoff and validates on the next N weeks.
     This proves model generalises across time — major credibility signal.
@@ -518,7 +518,7 @@ def walk_forward_cv(
         p50_arr = np.maximum(p10_arr, p50_arr)
         p90_arr = np.maximum(p50_arr, p90_arr)
 
-        # CRITICAL FIX: Mask out zero/micro-revenue weeks that explode the WAPE denominator
+        # CRITICAL: Mask out zero/micro-revenue weeks that explode the WAPE denominator
         active_mask = y_arr > 100.0
         
         if active_mask.sum() > 5:
@@ -594,12 +594,12 @@ def train_quantile_models(
     """Train direct horizon models targeting revenue residuals.
     
     v3.1 Changes:
-    - Fix 1: Residuals transformed with log1p (with shift) before training
-    - Fix 2: LGBMClassifier zero-inflation gate per model key
-    - Fix 3: Q90 training targets clipped at 95th percentile
-    - Fix 11: Combined channel + temporal sample weights
-    - Fix 12: Optional Optuna hyperparameter tuning (run_optuna=True)
-    - Fix 13: Optional walk-forward CV (run_cv=True)
+    - Residuals transformed with log1p (with shift) before training
+    - LGBMClassifier zero-inflation gate per model key
+    - Q90 training targets clipped at 95th percentile
+    - Combined channel + temporal sample weights
+    - Optional Optuna hyperparameter tuning (run_optuna=True)
+    - Optional walk-forward CV (run_cv=True)
     """
     bundle = ModelBundle()
     panel = panel.sort_values("date").copy()
@@ -626,7 +626,7 @@ def train_quantile_models(
     if len(train_df) > 0 and len(test_df) > 0:
         verify_zero_data_leakage(train_df, test_df, time_col='date')
 
-    # Fix 12: Optional Optuna tuning on the full training data
+    # Optional Optuna tuning on the full training data
     active_lgbm_params = LGBM_PARAMS.copy()
     if run_optuna and len(train_df) > 50:
         print(f"[Optuna] Running {OPTUNA_TRIALS} trials to tune LGBM hyperparameters...")
@@ -649,7 +649,7 @@ def train_quantile_models(
                 bundle.optuna_best_params = tuned
                 print(f"[Optuna] Using tuned params for all model training.")
 
-    # Fix 13: Optional walk-forward CV (does not affect model training — diagnostic only)
+    # Optional walk-forward CV (does not affect model training — diagnostic only)
     if run_cv:
         print(f"[CV] Running 3-fold walk-forward cross-validation...")
         cv_results = walk_forward_cv(train_df, bundle.feature_cols)
@@ -681,7 +681,7 @@ def train_quantile_models(
         tr_part = tr_enc.iloc[:-val_size].copy()
         val_part = tr_enc.iloc[-val_size:].copy()
 
-        # Fix 11: Combined channel imbalance + temporal decay weights
+        # Combined channel imbalance + temporal decay weights
         all_weights = compute_temporal_weights(tr_enc, apply_channel_weights=True)
         tr_weights = all_weights[:-val_size]
         rev_weights = np.sqrt(np.maximum(tr_part["revenue"].values, 0) + 1.0) * tr_weights
@@ -696,7 +696,7 @@ def train_quantile_models(
             tr_part_H["planned_spend"] = tr_part_H[f"planned_spend_{H}"]
             val_part_H["planned_spend"] = val_part_H[f"planned_spend_{H}"]
 
-            # Fix 7: Update interaction features with correct planned_spend
+            # Update interaction features with correct planned_spend
             tr_part_H["log_proposed_spend"] = np.log1p(tr_part_H["planned_spend"].clip(lower=0))
             val_part_H["log_proposed_spend"] = np.log1p(val_part_H["planned_spend"].clip(lower=0))
 
@@ -704,7 +704,7 @@ def train_quantile_models(
                 tr_part_H["log_spend"] = np.log1p(tr_part_H["planned_spend"])
                 val_part_H["log_spend"] = np.log1p(val_part_H["planned_spend"])
 
-            # Fix 1: Log-transform the residual targets
+            # Log-transform the residual targets
             y_train_raw = tr_part_H[f"residual_{H}"].values
             y_val_raw = val_part_H[f"residual_{H}"].values
             y_train = _to_log_residual(y_train_raw)
@@ -721,10 +721,10 @@ def train_quantile_models(
 
             bundle.quantile_models[key][H] = _train_engine(
                 X_train, y_train, X_val, y_val, rev_weights, active_lgbm_params,
-                clip_q90_at_percentile=True,   # Fix 3
+                clip_q90_at_percentile=True,   # 
             )
 
-        # Fix 2: Train zero-inflation classifier on the full training set for this group
+        # Train zero-inflation classifier on the full training set for this group
         tr_enc_full = tr_enc.copy()
         tr_enc_full["planned_spend"] = tr_enc_full["planned_spend_30"].fillna(0)
         tr_enc_full["log_spend"] = np.log1p(tr_enc_full["planned_spend"])
@@ -824,11 +824,11 @@ def predict_group(
     campaign_type: str | None = None,
     spend_override: float | None = None,
 ) -> dict[str, float]:
-    """Predict P10/P50/P90 for a single group with all fixes applied.
+    """Predict P10/P50/P90 for a single group with structural constraints applied.
     
-    Fix 1: Predictions decoded from log space
-    Fix 2: LGBMClassifier gate with asymmetric thresholds
-    Fix 14: Non-crossing enforcement + ROAS cap
+    Predictions decoded from log space
+    LGBMClassifier gate with asymmetric thresholds
+    Non-crossing enforcement + ROAS cap
     """
     key = model_key(row, campaign_type)
 
@@ -887,7 +887,7 @@ def predict_group(
         df[c] = 0.0
     X = df[feature_cols]
 
-    # Fix 2: Apply binary zero-inflation classifier gate
+    # Apply binary zero-inflation classifier gate
     activity_prob = 1.0
     if key in zero_classifiers:
         try:
@@ -902,7 +902,7 @@ def predict_group(
     for q, m in models.items():
         residuals_log[f"p{int(q*100)}"] = float(m.predict(X)[0])
 
-    # Fix 1: Decode from log space
+    # Decode from log space
     residuals = {
         k: float(_from_log_residual(np.array([v]))[0])
         for k, v in residuals_log.items()
@@ -927,7 +927,7 @@ def predict_group(
     # Conformal calibration (Action 1: per-channel)
     calib_mult = getattr(bundle, "calibration_factors", {}).get(channel, 1.0)
     
-    # CRITICAL FIX: Force Bing wider, constrain Meta
+    # CRITICAL: Force Bing wider, constrain Meta
     if channel and 'bing' in channel.lower():
         calib_mult = max(calib_mult, 3.5)  # Force massively wider to escape 33% coverage
     elif channel and 'meta' in channel.lower():
@@ -939,7 +939,7 @@ def predict_group(
         preds["p10"] = max(0.0, preds["p50"] - half)
         preds["p90"] = preds["p50"] + half
 
-    # Fix 2: Apply asymmetric classifier thresholds
+    # Apply asymmetric classifier thresholds
     # P10 (pessimistic): only show revenue when very confident campaign is active
     if activity_prob <= CLASSIFIER_THRESHOLD_P10:
         preds["p10"] = 0.0
@@ -950,7 +950,7 @@ def predict_group(
     if activity_prob <= CLASSIFIER_THRESHOLD_P90:
         preds["p90"] = 0.0
 
-    # Fix 14: Enforce monotonicity (non-crossing) — always last
+    # Enforce monotonicity (non-crossing) — always last
     return _enforce_quantile_order(preds)
 
 

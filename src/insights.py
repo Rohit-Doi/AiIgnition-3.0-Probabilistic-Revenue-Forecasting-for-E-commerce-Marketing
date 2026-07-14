@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from src.config import GROQ_API_URL, GROQ_MODEL
 from src.model import predict_group
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _call_groq(prompt: str, api_key: str) -> dict | None:

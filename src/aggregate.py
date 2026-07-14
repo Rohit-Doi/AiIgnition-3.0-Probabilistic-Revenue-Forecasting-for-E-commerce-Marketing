@@ -1,16 +1,16 @@
-"""Weekly aggregation and feature engineering — v3.1 (All-15-Fixes).
+"""Weekly aggregation and feature engineering — v3.1 (Production Version).
 
-New in v3.1 (All-15-Fixes):
-- Fix 5: Cyclical calendar encoding (week_sin, week_cos, month_sin, month_cos)
-- Fix 6: Ecommerce event flags (black_friday, cyber_week, christmas, back_to_school,
+New in v3.1 (Production Version):
+- Cyclical calendar encoding (week_sin, week_cos, month_sin, month_cos)
+- Ecommerce event flags (black_friday, cyber_week, christmas, back_to_school,
          jan_slump, valentines_week)
-- Fix 7: Budget ratio, log proposed spend, spend saturation, interaction features
+- Budget ratio, log proposed spend, spend saturation, interaction features
          (spend_x_roas, budget_ratio_x_roas, log_spend_x_trend, revenue_trend)
-- Fix 8: Target encoding per (channel, campaign_type) — te_revenue, te_roas
+- Target encoding per (channel, campaign_type) — te_revenue, te_roas
          with expanding cumulative mean to prevent data leakage
-- Fix 9: Decay-weighted lags (revenue_decay_4w, spend_decay_4w, half-life=2 weeks)
-- Fix 10: Channel efficiency features (channel_avg_roas, spend_vs_channel_avg)
-- Fix 11: Combined channel imbalance + temporal decay sample weights
+- Decay-weighted lags (revenue_decay_4w, spend_decay_4w, half-life=2 weeks)
+- Channel efficiency features (channel_avg_roas, spend_vs_channel_avg)
+- Combined channel imbalance + temporal decay sample weights
 
 Pre-existing differentiators preserved:
 - MACD momentum anchor (fast/slow EMA ratio)
@@ -212,16 +212,16 @@ def add_cross_platform_halo(panel: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ─── Temporal + channel sample weights (Fix 11) ──────────────────────────────
+# ─── Temporal + channel sample weights ──────────────────────────────
 
 def compute_temporal_weights(
     panel: pd.DataFrame,
     decay: float = 0.985,
     apply_channel_weights: bool = True,
 ) -> np.ndarray:
-    """Combined exponential temporal decay + channel imbalance correction (Fix 11).
+    """Combined exponential temporal decay + channel imbalance correction .
     
-    Fix 11: Google has ~19k rows, Bing ~2.8k. Without channel weights the model
+    Google has ~19k rows, Bing ~2.8k. Without channel weights the model
     ignores Bing. This combines both corrections for strictly better results than
     either alone.
     
@@ -245,10 +245,10 @@ def compute_temporal_weights(
     return combined.astype(np.float32)
 
 
-# ─── Fix 5: Cyclical calendar encoding ───────────────────────────────────────
+# ─── Cyclical calendar encoding ───────────────────────────────────────
 
 def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Fix 5: Cyclical sin/cos encoding for week_of_year and month.
+    """Cyclical sin/cos encoding for week_of_year and month.
     
     Week 53 and week 1 are adjacent in reality — ordinal encoding treats them as
     maximally different. Cyclical encoding wraps the calendar correctly.
@@ -266,10 +266,10 @@ def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ─── Fix 6: Ecommerce event flags ────────────────────────────────────────────
+# ─── Ecommerce event flags ────────────────────────────────────────────
 
 def add_ecommerce_event_flags(df: pd.DataFrame) -> pd.DataFrame:
-    """Fix 6: Specific high-revenue ecommerce event flags.
+    """Specific high-revenue ecommerce event flags.
     
     Black Friday and Cyber Week are the highest-revenue weeks of the year for
     ecommerce. Without these flags the model massively under-predicts those weeks.
@@ -295,10 +295,10 @@ def add_ecommerce_event_flags(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ─── Fix 7: Budget ratio & interaction features ───────────────────────────────
+# ─── Budget ratio & interaction features ───────────────────────────────
 
 def add_budget_and_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Fix 7: Budget ratio, log spend, spend saturation, and interaction features.
+    """Budget ratio, log spend, spend saturation, and interaction features.
     
     Friend's feature importance shows:
       #1: proposed_weekly_spend
@@ -340,14 +340,14 @@ def add_budget_and_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ─── Fix 8: Target encoding ───────────────────────────────────────────────────
+# ─── Target encoding ───────────────────────────────────────────────────
 
 def add_target_encoding(
     df: pd.DataFrame,
     group_cols: list[str] | None = None,
     target_col: str = "revenue",
 ) -> pd.DataFrame:
-    """Fix 8: Leave-one-out expanding cumulative mean — no data leakage.
+    """Leave-one-out expanding cumulative mean — no data leakage.
     
     For each row, uses only data from weeks BEFORE that row (expanding mean shifted
     by 1 week). First row of each group gets global mean as prior.
@@ -390,7 +390,7 @@ def add_target_encoding(
     return out
 
 
-# ─── Fix 9: Decay-weighted lags ───────────────────────────────────────────────
+# ─── Decay-weighted lags ───────────────────────────────────────────────
 
 def add_decay_weighted_lags(
     df: pd.DataFrame,
@@ -398,7 +398,7 @@ def add_decay_weighted_lags(
     target_col: str = "revenue",
     halflife: float = 2.0,
 ) -> pd.DataFrame:
-    """Fix 9: Exponentially decay-weighted sum of last 4 weeks (halflife=2 weeks).
+    """Exponentially decay-weighted sum of last 4 weeks (halflife=2 weeks).
     
     Weights: [1.0, 0.71, 0.50, 0.35] normalised (most recent first).
     More sensitive to recent budget changes than simple rolling mean.
@@ -443,10 +443,10 @@ def add_decay_weighted_lags(
     return out
 
 
-# ─── Fix 10: Channel efficiency features ─────────────────────────────────────
+# ─── Channel efficiency features ─────────────────────────────────────
 
 def add_channel_efficiency_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Fix 10: Relative ROAS efficiency vs channel average.
+    """Relative ROAS efficiency vs channel average.
     
     A campaign earning 3x ROAS when channel average is 5x is underperforming.
     The same 3x when channel average is 2x is a star. Relative efficiency is
@@ -477,7 +477,7 @@ def add_channel_efficiency_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_time_features(panel: pd.DataFrame, freq: str = "weekly") -> pd.DataFrame:
     """Compute all temporal, ratio, maturity, and dual-engine target features.
     
-    v3.1: Includes all new features from Fixes 5-10.
+    v3.1: Includes all new features for temporal momentum.
     """
     out = panel.copy()
     group_keys = _group_keys(out)
@@ -491,10 +491,10 @@ def add_time_features(panel: pd.DataFrame, freq: str = "weekly") -> pd.DataFrame
     out["is_q4"]          = (out["month"] >= 10).astype(int)
     out["is_holiday_adj"] = out["week_of_year"].isin([48, 49, 50, 51, 52, 1]).astype(int)
 
-    # Fix 5: Cyclical calendar encoding
+    # Cyclical calendar encoding
     out = add_cyclical_features(out)
 
-    # Fix 6: Ecommerce event flags
+    # Ecommerce event flags
     out = add_ecommerce_event_flags(out)
 
     # ── Global Portfolio Momentum ────────────────────────────────────────────
@@ -657,17 +657,17 @@ def add_time_features(panel: pd.DataFrame, freq: str = "weekly") -> pd.DataFrame
     out["log_revenue"] = np.log1p(out["revenue"].clip(lower=0))
     out["log_spend"]   = np.log1p(out["spend"].clip(lower=0))
 
-    # ── Planned spend features (needed for Fix 7 interaction terms) ───────────
+    # ── Planned spend features (needed for interaction terms) ───────────
     # Use 30-day planned spend as the default "planned_spend" before training sets it
     out["planned_spend"] = out["planned_spend_30"].fillna(0.0)
 
-    # Fix 7: Budget ratio & interaction features
+    # Budget ratio & interaction features
     out = add_budget_and_interaction_features(out)
 
-    # Fix 9: Decay-weighted lags
+    # Decay-weighted lags
     out = add_decay_weighted_lags(out, group_keys=group_keys)
 
-    # Fix 10: Channel efficiency features
+    # Channel efficiency features
     out = add_channel_efficiency_features(out)
 
     if freq == "daily":
@@ -711,18 +711,18 @@ _HALO_DEFAULTS = {
     "meta_spend_roll4": 0.0, "meta_spend_roll8": 0.0,
     "portfolio_upper_lower_ratio": 1.0,
 }
-# Fix 5: Cyclical calendar defaults
+# Cyclical calendar defaults
 _CYCLICAL_DEFAULTS = {
     "week_sin": 0.0, "week_cos": 1.0,
     "month_sin": 0.0, "month_cos": 1.0,
 }
-# Fix 6: Ecommerce event defaults
+# Ecommerce event defaults
 _EVENT_DEFAULTS = {
     "is_black_friday_week": 0, "is_cyber_week": 0,
     "is_christmas_week": 0, "is_back_to_school": 0,
     "is_jan_slump": 0, "is_valentines_week": 0,
 }
-# Fix 7-10: New feature defaults
+# -10: New feature defaults
 _NEW_FEATURE_DEFAULTS = {
     "budget_ratio": 1.0, "log_proposed_spend": 0.0, "spend_saturation": 0.0,
     "spend_x_roas": 0.0, "budget_ratio_x_roas": 0.0, "log_spend_x_trend": 0.0,
@@ -770,7 +770,7 @@ def build_training_panel(df: pd.DataFrame, freq: str = "weekly") -> pd.DataFrame
     panel = add_time_features(panel, freq=freq)
     panel = classify_group_sufficiency(panel)
 
-    # Fix 8: Target encoding — applied after all other features, before train/test split
+    # Target encoding — applied after all other features, before train/test split
     # This uses expanding mean on the full panel (safe because we shift by 1 week)
     panel = add_target_encoding(panel)
 
@@ -809,7 +809,7 @@ def aggregate_by_level(panel: pd.DataFrame, level: str) -> pd.DataFrame:
     grouped = add_time_features(grouped, freq="weekly")
     grouped = classify_group_sufficiency(grouped)
 
-    # Fix 8: Target encoding at aggregated level
+    # Target encoding at aggregated level
     grouped = add_target_encoding(grouped)
 
     level_fill = {**FILL_DEFAULTS}

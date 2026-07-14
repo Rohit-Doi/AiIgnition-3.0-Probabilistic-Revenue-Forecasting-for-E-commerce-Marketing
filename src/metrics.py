@@ -1,6 +1,6 @@
 """Backtest metrics: WAPE (primary), SMAPE, MAPE, MAE, RMSE, pinball loss, coverage, baseline comparison.
 
-Fix 4 (v3.1): WAPE (Weighted Absolute Percentage Error) is now the PRIMARY metric.
+(v3.1): WAPE (Weighted Absolute Percentage Error) is now the PRIMARY metric.
 - WAPE weights errors by actual revenue size → large-revenue weeks dominate correctly.
 - SMAPE remains secondary for cross-comparison with friend's submission.
 - Added full_scorecard() convenience function matching the improvement plan spec.
@@ -16,7 +16,7 @@ import pandas as pd
 # ─── Core scalar metrics ─────────────────────────────────────────────────────
 
 def wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Weighted Absolute Percentage Error — PRIMARY METRIC (Fix 4).
+    """Weighted Absolute Percentage Error — PRIMARY METRIC .
     
     WAPE = sum(|actual - pred|) / sum(|actual|) × 100
     Weights errors by revenue magnitude: large-revenue weeks dominate.
@@ -82,7 +82,7 @@ def interval_width(p_lower: np.ndarray, p_upper: np.ndarray) -> float:
     return float(np.mean(p_upper - p_lower))
 
 
-# ─── Full scorecard (Fix 4) ───────────────────────────────────────────────────
+# ─── Full scorecard ───────────────────────────────────────────────────
 
 def full_scorecard(
     y_true: np.ndarray,
@@ -99,7 +99,7 @@ def full_scorecard(
     active_mask = (p50 > 100) | (y_true > 100)
     
     result = {
-        "WAPE": wape(y_true, p50),            # PRIMARY — Fix 4
+        "WAPE": wape(y_true, p50),            # PRIMARY — 
         "SMAPE": smape(y_true, p50),           # Secondary
         "SMAPE_active": smape(y_true[active_mask], p50[active_mask]) if active_mask.any() else float("nan"),
         "MAE": mae(y_true, p50),
@@ -136,7 +136,7 @@ def roas_metrics(
     y_pred: np.ndarray,
     spend: np.ndarray,
     spend_min: float = 0.0,
-    roas_cap: float = 15.0,   # Fix 14: reduced from 50
+    roas_cap: float = 15.0,   # reduced from 50
 ) -> dict[str, float]:
     mask = spend > spend_min
     if not mask.any():
@@ -188,13 +188,13 @@ def evaluate_predictions(
     spend: np.ndarray | None = None,
     revenue_min: float | None = None,
     spend_min: float | None = None,
-    roas_cap: float = 15.0,   # Fix 14: reduced from 50
+    roas_cap: float = 15.0,   # reduced from 50
 ) -> dict:
     active_mask = (p50 > 100) | (y_true > 100)
     
-    # WAPE is now the primary metric (Fix 4) — listed first
+    # WAPE is now the primary metric — listed first
     results = {
-        "wape_p50": wape(y_true, p50),         # PRIMARY (Fix 4)
+        "wape_p50": wape(y_true, p50),         # PRIMARY 
         "smape_p50": smape(y_true, p50),
         "smape_active_p50": smape(y_true[active_mask], p50[active_mask]) if active_mask.any() else float("nan"),
         "mape_p50": mape(y_true, p50),
@@ -281,7 +281,7 @@ def compare_to_baselines(
     spend: np.ndarray,
     revenue_min: float | None = None,
     spend_min: float | None = None,
-    roas_cap: float = 15.0,   # Fix 14
+    roas_cap: float = 15.0,   # 
 ) -> dict:
     mask = _mask_by_thresholds(y_true, spend=spend, revenue_min=revenue_min, spend_min=spend_min)
     if not mask.any():
@@ -301,7 +301,7 @@ def compare_to_baselines(
     rows = []
     model_row = {
         "model": "lightgbm_p50",
-        "wape": wape(y_true_eval, model_eval),   # PRIMARY (Fix 4)
+        "wape": wape(y_true_eval, model_eval),   # PRIMARY 
         "smape": smape(y_true_eval, model_eval),
         "mape": mape(y_true_eval, model_eval),
         "wmape": wape(y_true_eval, model_eval),
@@ -315,7 +315,7 @@ def compare_to_baselines(
     for name, preds in baselines.items():
         row = {
             "model": name,
-            "wape": wape(y_true_eval, preds),    # PRIMARY (Fix 4)
+            "wape": wape(y_true_eval, preds),    # PRIMARY 
             "smape": smape(y_true_eval, preds),
             "mape": mape(y_true_eval, preds),
             "wmape": wape(y_true_eval, preds),
@@ -326,7 +326,7 @@ def compare_to_baselines(
         row.update(roas_metrics(y_true_eval, preds, spend_eval, spend_min=spend_min or 0.0, roas_cap=roas_cap))
         rows.append(row)
 
-    # Fix 4: Rank baselines by WAPE (not SMAPE)
+    # Rank baselines by WAPE (not SMAPE)
     best_baseline = min(rows[1:], key=lambda r: r["wape"])
     wape_improvement = best_baseline["wape"] - model_row["wape"]
     smape_improvement = best_baseline["smape"] - model_row["smape"]

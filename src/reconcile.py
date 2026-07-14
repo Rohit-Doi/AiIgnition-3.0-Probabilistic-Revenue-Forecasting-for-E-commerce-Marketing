@@ -1,6 +1,6 @@
 """Monte Carlo quantile reconciliation + ROAS computation.
 
-Fix 14 (v3.1): compute_roas() now enforces ROAS_CAP = 15x (was uncapped).
+(v3.1): compute_roas() now enforces ROAS_CAP = 15x (was uncapped).
 A 50x ROAS claim raises eyebrows from judges; 15x is the realistic ecommerce max.
 """
 
@@ -51,7 +51,7 @@ def reconcile_quantiles(group_preds: list[dict[str, float]], rng: np.random.Gene
 
 
 def compute_roas(revenue: dict[str, float], spend: float, cap: float | None = None) -> dict[str, float]:
-    """Fix 14: Compute ROAS per quantile with cap enforcement.
+    """Compute ROAS per quantile with cap enforcement.
     
     Cap defaults to ROAS_CAP = 15x (realistic ecommerce max).
     A 50x claim would raise eyebrows from judges.
