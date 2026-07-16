@@ -191,7 +191,7 @@ Aggregate coverage (P10–P90) across the 70 filtered rows is 85.7%, above our 8
 
 Bing's intervals are unreliable in this holdout window. Root cause: 121 training rows for Bing versus several thousand for Google/Meta — not enough history for the quantile model to learn realistic uncertainty bands. We widened Bing intervals deliberately to compensate, which helped but didn't fully close the gap. **We do not recommend trusting Bing's probabilistic ranges for budget decisions in this prototype's current state**; point estimates are more usable there than the intervals.
 
-> **Why does the raw (unfiltered) coverage drop to 75%?** Unfiltered data includes highly unpredictable edge cases (e.g., dormant campaigns with $0 spend suddenly registering residual, un-attributed conversion revenue). Filtering these known anomalies elevates the calibrated coverage to our stated 87.1% target for active campaigns.
+> **Why does the raw (unfiltered) coverage drop to 75%?** Unfiltered data includes highly unpredictable edge cases (e.g., dormant campaigns with $0 spend suddenly registering residual, un-attributed conversion revenue). Filtering these known anomalies elevates the calibrated coverage to our stated 85.7% target for active campaigns.
 
 > **Additional Interval Metrics (`validation_results.json`):**
 > - Average interval width: $18,054

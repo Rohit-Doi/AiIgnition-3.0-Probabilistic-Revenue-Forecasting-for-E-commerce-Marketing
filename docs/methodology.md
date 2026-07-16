@@ -72,7 +72,7 @@ Instead of predicting next week's revenue and feeding it forward recursively, we
    - The **P50 median model** uses **Huber Loss** (`objective='huber'`) to remain robust against massive outlier weeks.
    - The **P10 and P90 models** use standard Quantile loss.
    - **Q90 targets are clipped at the 95th percentile** during training to prevent Black Friday outliers from inflating the upper bound unrealistically.
-3. **Binary Zero-Inflation Classifier Gate**: A separate `LGBMClassifier` is trained per model group to predict `revenue > 0`. Asymmetric probability thresholds gate each quantile: P10 (prob > 0.90), P50 (prob > 0.40), P90 (prob > 0.10). This drove coverage from 62.9% → 87.1%.
+3. **Binary Zero-Inflation Classifier Gate**: A separate `LGBMClassifier` is trained per model group to predict `revenue > 0`. Asymmetric probability thresholds gate each quantile: P10 (prob > 0.90), P50 (prob > 0.40), P90 (prob > 0.10). This drove coverage from 62.9% → 85.7%.
 4. **Exact Conformal Calibration**: Post-training, we calculate empirical coverage on the validation fold and compute an exact numerical multiplier to dynamically widen or narrow confidence bounds, targeting 80% coverage.
 5. **No Error Compounding**: By eliminating the recursive loop, errors do not snowball over time.
 6. **Apples-to-Apples Evaluation**: 30-day horizon forecasts evaluated against true forward-summed 30-day actuals, scaled to weekly run-rates.
@@ -277,11 +277,11 @@ For complete transparency, here is the exact output of every evaluation metric g
 #### ROAS Specific Metrics (Filtered, n=70)
 | Metric | Value |
 |---|---|
-| mape_roas | 51.933680787918526% |
-| wmape_roas | 57.37483103058993% |
-| mae_roas | 2.8127498705440463 |
-| rmse_roas | 3.6508167953190465 |
-| median_ae_roas | 1.9984658904024553 |
+| mape_roas | 52.37799154719362% |
+| wmape_roas | 51.554731712160226% |
+| mae_roas | 2.912295657067393 |
+| rmse_roas | 3.7208297814118896 |
+| median_ae_roas | 2.3411437276151315 |
 
 #### Unfiltered Baseline Comparison (raw_*, n=92)
 | Metric | Value |
