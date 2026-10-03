@@ -1,11 +1,13 @@
-"""Train quantile models, backtest on holdout, compare vs baselines.
+"""Train the forecasting bundle and measure it with a rolling-origin backtest.
 
-v3.1 Changes (Production Version):
-- WAPE is now the PRIMARY printed metric (was SMAPE)
-- --optuna flag: triggers Optuna 50-trial hyperparameter tuning 
-- --cv flag: triggers 3-fold walk-forward cross-validation 
-- ROAS cap updated to 15x throughout 
-- Adds wape_p50 to holdout metrics and all print outputs
+    python -m src.train                 # backtest + fit + write pickle/model.pkl and docs/
+    python -m src.train --skip-backtest # refit only, reuse the calibration in the existing bundle
+
+Order of operations:
+1. Rolling-origin backtest: refit on truncated data at every weekly origin and
+   forecast the 30/60/90 days that followed (src/backtest.py).
+2. Conformal calibration of the intervals from those out-of-sample residuals.
+3. Final fit on all data, bundled with the calibration and a seasonal reference.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,359 +23,275 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pandas as pd
 
-from src.config import HOLDOUT_WEEKS, META_CONVERSION_AS_REVENUE, ROOT
-from src.metrics import compare_to_baselines, evaluate_predictions, metrics_table
-from src.config import ROAS_CAP, ROAS_EVAL_MIN_SPEND
-from src.model import ModelBundle, model_key, predict_group, save_bundle, train_quantile_models
+from src.backtest import (
+    compare_with_legacy,
+    honest_forecasts,
+    run_backtest,
+    summarise,
+    test_origins,
+    training_origins,
+)
+from src.config import HORIZONS, INTERVAL_COVERAGE, META_CONVERSION_AS_REVENUE, RANDOM_SEED, ROOT
+from src.features import SeasonalReference, build_samples
+from src.forecast import public_columns
+from src.model import fit_conformal, fit_core, load_bundle, make_bundle, save_bundle
 from src.pipeline import prepare_data
 
+DOCS = ROOT / "docs"
+LEGACY_BACKTEST = DOCS / "legacy_v31_backtest.csv"
 
-def run_backtest(bundle: ModelBundle, test_df: pd.DataFrame) -> dict:
-    """Evaluate on unseen holdout weeks: WAPE (primary) + SMAPE + MAE + coverage + baselines."""
-    y_true, p10, p50, p90, spend = [], [], [], [], []
-    by_type_records = []
 
-    nonzero_revenue = test_df.loc[test_df["revenue"] > 0, "revenue"]
-    revenue_min_quantile = float(np.quantile(nonzero_revenue, 0.10)) if len(nonzero_revenue) else 0.0
-    revenue_min = max(revenue_min_quantile, 500.0)
-    spend_min = ROAS_EVAL_MIN_SPEND
+def _records(df: pd.DataFrame) -> list[dict]:
+    return json.loads(df.round(4).to_json(orient="records", date_format="iso"))
 
-    # Exclude zero-fill rows (added by fill_missing_weeks) from backtest
-    test_df = test_df[~((test_df["spend"] == 0) & (test_df["revenue"] == 0))].copy()
 
-    # Exclude rows without future targets
-    test_df = test_df[test_df["target_30"].notna()].copy()
-    test_df = test_df[test_df["target_30"] > 0].copy()
-
-    for key in test_df["model_key"].unique() if "model_key" in test_df.columns else []:
-        subset = test_df[test_df["model_key"] == key]
-        ct = key.split("|", 1)[1]
-        yt, pt10, pt50, pt90, sp = [], [], [], [], []
-        for _, row in subset.iterrows():
-            target = float(row["target_30"])
-            preds = predict_group(bundle, row, horizon=30, campaign_type=ct)
-            # Scale down to weekly run-rate for apples-to-apples comparison
-            yt.append(target / 4.0)
-            pt10.append(preds["p10"] / 4.0)
-            pt50.append(preds["p50"] / 4.0)
-            pt90.append(preds["p90"] / 4.0)
-            sp.append(row.get("planned_spend_30", 0) / 4.0)
-        if not yt:
-            continue
-        yt_a, pt10_a, pt50_a, pt90_a, sp_a = map(
-            np.array, (yt, pt10, pt50, pt90, sp)
-        )
-        m = evaluate_predictions(
-            yt_a,
-            pt10_a,
-            pt50_a,
-            pt90_a,
-            spend=sp_a,
-            revenue_min=revenue_min,
-            spend_min=spend_min,
-            roas_cap=ROAS_CAP,
-        )
-        m["model_key"] = key
-        by_type_records.append(m)
-        y_true.extend(yt)
-        p10.extend(pt10)
-        p50.extend(pt50)
-        p90.extend(pt90)
-        spend.extend(sp)
-
-    if not y_true:
-        return {}
-
-    y_true_a = np.array(y_true)
-    p10_a = np.array(p10)
-    p50_a = np.array(p50)
-    p90_a = np.array(p90)
-    spend_a = np.array(spend)
-
-    overall = evaluate_predictions(
-        y_true_a,
-        p10_a,
-        p50_a,
-        p90_a,
-        spend=spend_a,
-        revenue_min=revenue_min,
-        spend_min=spend_min,
-        roas_cap=ROAS_CAP,
-    )
-
-    # Promote filtered metrics to primary (overwrite raw with filtered)
-    for metric_name in [
-        "wape_p50",      # PRIMARY 
-        "smape_p50",
-        "mape_p50",
-        "mae_p50",
-        "rmse_p50",
-        "median_ae_p50",
-        "coverage_p10_p90",
-        "avg_interval_width",
-        "pinball_q10",
-        "pinball_q50",
-        "pinball_q90",
-        "mape_roas",
-        "mae_roas",
-        "rmse_roas",
-        "median_ae_roas",
-    ]:
-        filtered_key = f"filtered_{metric_name}"
-        if filtered_key in overall:
-            overall[f"raw_{metric_name}"] = overall[metric_name]
-            overall[metric_name] = overall[filtered_key]
-
-    overall["by_type"] = by_type_records
-    overall["holdout_weeks"] = HOLDOUT_WEEKS
-    overall["n_predictions"] = len(y_true_a)
-    overall["revenue_filter_min"] = revenue_min
-    overall["spend_filter_min"] = spend_min
-
-    if by_type_records:
-        diag_df = pd.DataFrame(by_type_records).copy()
-        diag_df["mae_median_gap"] = diag_df["mae_p50"] - diag_df["median_ae_p50"]
-        # Sort diagnostics by wape_p50 too (add fallback if column missing)
-        # NOTE: mae_median_gap is the *primary* sort key, so low-spend groups
-        # (e.g. bing|TOTAL, MAE~$447) rarely surface in the top-5 even when
-        # their WAPE is poor.  Full per-group data is always in holdout_by_type.csv.
-        sort_cols = [c for c in ["mae_median_gap", "wape_p50", "smape_p50"] if c in diag_df.columns]
-        cols = [c for c in ["model_key", "wape_p50", "smape_p50", "mae_p50", "median_ae_p50",
-                             "mae_median_gap", "coverage_p10_p90"] if c in diag_df.columns]
-        overall["outlier_diagnostics"] = (
-            diag_df.sort_values(sort_cols, ascending=False)[cols]
-            .head(5)
-            .to_dict(orient="records")
-        )
-
-    baseline = compare_to_baselines(
-        test_df,
-        y_true_a,
-        p50_a,
-        spend_a,
-        revenue_min=revenue_min,
-        spend_min=spend_min,
-        roas_cap=ROAS_CAP,
-    )
-    overall["baseline_comparison"] = baseline["comparison"]
-    overall["best_baseline"] = baseline["best_baseline"]
-    # Report WAPE improvement as primary improvement metric
-    overall["wape_improvement_vs_best_baseline"] = baseline["wape_improvement_vs_best_baseline"]
-    overall["smape_improvement_vs_best_baseline"] = baseline["smape_improvement_vs_best_baseline"]
-    overall["lightgbm_beats_baseline"] = baseline["lightgbm_beats_baseline"]
-    overall["evaluation_notes"] = {
-        "revenue_min": revenue_min,
-        "revenue_min_quantile_raw": revenue_min_quantile,
-        "revenue_min_floor": 500.0,
-        "spend_min": spend_min,
-        "roas_cap": ROAS_CAP,
-        "filtered_rows": int(overall.get("filtered_n", len(y_true_a))),
-        "total_rows": int(len(y_true_a)),
-        "primary_metric": "WAPE",   # document that WAPE is primary
+def backtest_report(fc: pd.DataFrame) -> dict:
+    """Summary tables stored in the bundle and written to docs/."""
+    by_level = summarise(fc)
+    by_season = summarise(fc, by=["peak"])
+    report = {
+        "protocol": "rolling-origin, refit at every origin on data truncated at that origin",
+        "n_origins": int(fc["origin"].nunique()),
+        "first_origin": str(fc["origin"].min().date()),
+        "last_origin": str(fc["origin"].max().date()),
+        "interval": f"P{int((1 - INTERVAL_COVERAGE) / 2 * 100)}-P{int((1 + INTERVAL_COVERAGE) / 2 * 100)}",
+        "by_level": _records(by_level),
+        "by_season": _records(by_season),
     }
+    if LEGACY_BACKTEST.exists():
+        report["vs_v31"] = _records(compare_with_legacy(fc, pd.read_csv(LEGACY_BACKTEST)))
+    # per-origin top-of-hierarchy forecasts for the dashboard's backtest replay
+    top = fc[fc["level"].isin(["blended", "channel"])]
+    cols = ["origin", "level", "channel", "horizon_days", "revenue_p10", "revenue_p50", "revenue_p90",
+            "budget_revenue_p50", "baseline_revenue", "actual_revenue", "spend_p50", "actual_spend", "peak"]
+    report["replay"] = _records(top[cols])
+    return report
 
-    return overall
+
+def write_docs(fc: pd.DataFrame, report: dict) -> None:
+    DOCS.mkdir(exist_ok=True)
+    pd.DataFrame(report["by_level"]).to_csv(DOCS / "backtest_by_level.csv", index=False)
+    pd.DataFrame(report["by_season"]).to_csv(DOCS / "backtest_by_season.csv", index=False)
+    if "vs_v31" in report:
+        pd.DataFrame(report["vs_v31"]).to_csv(DOCS / "backtest_vs_v31.csv", index=False)
+    keep = public_columns(fc[fc["level"] != "campaign"])
+    keep.to_csv(DOCS / "backtest_forecasts.csv", index=False)
+    with open(DOCS / "validation_results.json", "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in report.items() if k != "replay"}, f, indent=2)
+    (DOCS / "results.md").write_text(results_markdown(report), encoding="utf-8")
 
 
-def ablation_daily_vs_weekly(data_dir: Path) -> pd.DataFrame:
+_LEVEL_NAMES = {"blended": "Blended", "channel": "Channel", "campaign_type": "Campaign type", "campaign": "Campaign"}
+
+
+def _md_table(df: pd.DataFrame, columns: dict[str, str], fmt: dict[str, str]) -> str:
+    """Markdown table of selected columns ({source: header}) with per-column formats."""
+    head = "| " + " | ".join(columns.values()) + " |"
+    rule = "|" + "|".join("---" if c in ("level", "season") else "---:" for c in columns) + "|"
     rows = []
-    for freq in ["weekly", "daily"]:
-        _, _, _, type_panel, _ = prepare_data(data_dir, freq=freq)
-        type_panel = type_panel.copy()
-        type_panel["model_key"] = type_panel.apply(lambda r: model_key(r), axis=1)
-        bundle, test_df = train_quantile_models(type_panel)
-        metrics = run_backtest(bundle, test_df)
-        rows.append(
-            {
-                "aggregation": freq,
-                "wape_p50": metrics.get("wape_p50", 0),   # PRIMARY 
-                "smape_p50": metrics.get("smape_p50", 0),
-                "mape_p50": metrics.get("mape_p50", 0),
-                "mae_p50": metrics.get("mae_p50", 0),
-                "rmse_p50": metrics.get("rmse_p50", 0),
-                "coverage_p10_p90": metrics.get("coverage_p10_p90", 0),
-                "avg_interval_width": metrics.get("avg_interval_width", 0),
-            }
-        )
-    return pd.DataFrame(rows)
+    for _, r in df.iterrows():
+        cells = []
+        for c in columns:
+            v = r[c]
+            cells.append(_LEVEL_NAMES.get(v, str(v)) if isinstance(v, str)
+                         else "-" if pd.isna(v) else fmt.get(c, "{:.1f}").format(v))
+        rows.append("| " + " | ".join(cells) + " |")
+    return "\n".join([head, rule, *rows])
 
 
-def evaluate_at_campaign_level(bundle, panel_df, holdout_weeks):
-    """
-    Generate predictions at the individual campaign level for an apples-to-apples
-    MAE comparison with campaign-level baselines.
-    """
-    test_start = panel_df["date"].max() - pd.Timedelta(weeks=holdout_weeks)
-    test_panel = panel_df[panel_df["date"] >= test_start].copy()
-    
-    merged_rows = []
-    for _, row in test_panel.iterrows():
-        actual = float(row.get("target_30", 0)) / 4.0
-        if actual < 100:
-            continue
-            
-        preds = predict_group(bundle, row, horizon=30)
-        p50 = preds["p50"] / 4.0
-        
-        merged_rows.append({
-            "actual_revenue": actual,
-            "p50_revenue": p50,
-        })
-        
-    merged = pd.DataFrame(merged_rows)
-    if merged.empty:
-        return {}
-        
-    campaign_mae  = np.mean(np.abs(merged['actual_revenue'] - merged['p50_revenue']))
-    campaign_wape = (np.sum(np.abs(merged['actual_revenue'] - merged['p50_revenue'])) /
-                     np.sum(merged['actual_revenue'])) * 100
+def _bias_range(by_season: pd.DataFrame, peak: bool) -> str:
+    b = by_season[(by_season["peak"] == peak) & (by_season["level"] == "blended")]["bias_pct"]
+    return f"{b.min():+.0f}% to {b.max():+.0f}%" if len(b) else "n/a"
 
-    return {
-        "campaign_level_MAE":  float(campaign_mae),
-        "campaign_level_WAPE": float(campaign_wape),
-        "n_campaign_rows":     len(merged),
-    }
 
-def main():
-    parser = argparse.ArgumentParser(description="Train AIgnition forecasting model v3.1")
+def _wape_range(by_season: pd.DataFrame, peak: bool, col: str) -> str:
+    b = by_season[(by_season["peak"] == peak) & (by_season["level"] == "blended")][col]
+    return f"{b.min():.0f}-{b.max():.0f}%" if len(b) else "n/a"
+
+
+def results_markdown(report: dict) -> str:
+    """docs/results.md, regenerated by every training run so it always matches the shipped model."""
+    by_level = pd.DataFrame(report["by_level"])
+    by_season = pd.DataFrame(report["by_season"])
+    by_season["season"] = np.where(by_season["peak"], "Touches peak season", "Rest of year")
+    blended = by_level[by_level["level"] == "blended"].set_index("horizon_days")
+    pct, cnt = "{:.1f}%", "{:.0f}"
+    acc_cols = {"level": "Level", "horizon_days": "Horizon (days)", "n": "Forecasts", "wape": "WAPE",
+                "wape_budget_known": "WAPE, budget known", "wape_run_rate": "Run-rate baseline",
+                "wape_seasonal_naive": "Seasonal-naive baseline", "bias_pct": "Bias"}
+    acc_fmt = {"horizon_days": cnt, "n": cnt, "wape": pct, "wape_budget_known": pct, "wape_run_rate": pct,
+               "wape_seasonal_naive": pct, "bias_pct": "{:+.1f}%"}
+    cal_cols = {"level": "Level", "horizon_days": "Horizon (days)", "n_coverage": "Forecasts scored",
+                "coverage": "Revenue P10-P90 coverage", "coverage_budget_known": "…with budget known",
+                "roas_coverage": "ROAS P10-P90 coverage", "interval_width_pct": "Range width / actual",
+                "pinball_pct": "Pinball loss / actual", "spend_wape": "Spend WAPE", "roas_wape": "ROAS error"}
+    cal_fmt = {"horizon_days": cnt, "n_coverage": cnt, "coverage": pct, "coverage_budget_known": pct,
+               "roas_coverage": pct, "interval_width_pct": pct, "pinball_pct": pct, "spend_wape": pct,
+               "roas_wape": pct}
+
+    parts = [
+        "# Backtest results",
+        "",
+        "_Generated by `python -m src.train`. Do not edit by hand: re-train to refresh._",
+        "",
+        f"**Protocol.** {report['n_origins']} weekly forecast origins from {report['first_origin']} to "
+        f"{report['last_origin']}. At each origin the data is truncated at that date, the whole model is refitted "
+        "on what was visible then, and the revenue of the following 30 / 60 / 90 days is forecast for every node "
+        "of the hierarchy and compared with what happened. Interval calibration at an origin uses only residuals "
+        "from earlier origins whose windows had already closed. Nothing is filtered out: zero-revenue rows, "
+        "dormant campaigns and peak season are all scored.",
+        "",
+        "**Metrics.** WAPE = sum of absolute errors / sum of actual revenue (lower is better). "
+        "Coverage = share of actuals inside the P10-P90 range (target 80%). "
+        "Bias = total forecast / total actual - 1. "
+        "ROAS error = revenue error if the realised spend is multiplied by the forecast ROAS.",
+        "",
+        "## Headline",
+        "",
+        "| Horizon | Blended WAPE | Run-rate baseline | Seasonal-naive baseline | WAPE with budget known | P10-P90 coverage |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for h in sorted(blended.index):
+        b = blended.loc[h]
+        parts.append(f"| {int(h)} days | **{b['wape']:.1f}%** | {b['wape_run_rate']:.1f}% | "
+                     f"{b['wape_seasonal_naive']:.1f}% | **{b['wape_budget_known']:.1f}%** | {b['coverage']:.0f}% |")
+    parts += [
+        "",
+        "\"Budget known\" re-runs the same forecasts with the spend that was actually deployed, through the "
+        "fitted elasticity. It is what the Budget simulator delivers when the analyst enters the real plan, and "
+        "it shows how much of the blind error is simply not knowing the budget.",
+        "",
+    ]
+    if "vs_v31" in report:
+        legacy = pd.DataFrame(report["vs_v31"])
+        parts += [
+            "## Against the previous pipeline (v3.1)",
+            "",
+            "The v3.1 pipeline was put through the same protocol: retrained at each origin exactly as its "
+            "`train.py` did, then asked for the forecast its `run.sh` would have written. The comparison covers "
+            f"the {int(legacy['origins'].max())} origins and the series both pipelines produced "
+            "(v3.1 emitted only its top 20 campaigns).",
+            "",
+            _md_table(legacy, {"level": "Level", "horizon_days": "Horizon (days)", "n": "Forecasts",
+                               "wape_v31": "WAPE v3.1", "wape_v4": "WAPE v4", "coverage_v31": "Coverage v3.1",
+                               "coverage_v4": "Coverage v4", "bias_pct_v31": "Bias v3.1", "bias_pct_v4": "Bias v4"},
+                      {"horizon_days": cnt, "n": cnt, "wape_v31": pct, "wape_v4": pct, "coverage_v31": "{:.0f}%",
+                       "coverage_v4": "{:.0f}%", "bias_pct_v31": "{:+.0f}%", "bias_pct_v4": "{:+.0f}%"}),
+            "",
+            "v3.1's published 35.8% WAPE came from a different measurement: one-step weekly rows, the realised "
+            "future spend supplied as a feature, rows under $500 filtered out, and training targets that "
+            "overlapped the holdout. Under forward-looking scoring it under-forecast by roughly half.",
+            "",
+        ]
+    parts += [
+        "## Accuracy by level",
+        "",
+        _md_table(by_level, acc_cols, acc_fmt),
+        "",
+        "## Calibration, spend and ROAS",
+        "",
+        _md_table(by_level, cal_cols, cal_fmt),
+        "",
+        "Coverage is scored only on origins that had at least eight earlier, fully elapsed origins to calibrate "
+        "from, which is why fewer forecasts are scored at the longer horizons.",
+        "",
+        "## Peak season vs the rest of the year",
+        "",
+        "A forecast \"touches peak season\" when its target window or its 28-day base window overlaps "
+        "18 Nov - 24 Dec.",
+        "",
+        _md_table(by_season[by_season["level"].isin(["blended", "channel", "campaign_type"])],
+                  {"season": "Season", **acc_cols}, acc_fmt),
+        "",
+        "## Reading these numbers",
+        "",
+        "- Two kinds of event dominate the error, and they differ. The size and timing of the November-December "
+        "peak is a budget decision: when the window touches peak season, knowing the budget cuts blended WAPE "
+        "from " + _wape_range(by_season, True, "wape") + " to " + _wape_range(by_season, True, "wape_budget_known")
+        + ". The end of a promotion (May-June 2025) is a collapse in revenue per dollar, which a budget plan "
+        "does not fix; it is the reason the P10 sits far below the median.",
+        "- Campaign-level forecasts are directional. Individual campaigns start, stop and spike; plan budgets at "
+        "channel or campaign-type level.",
+        "- Blended bias is " + _bias_range(by_season, True) + " when the window touches peak season (2025's peak "
+        "outgrew its 2024 analog) and " + _bias_range(by_season, False) + " in the rest of the year.",
+        "- Files: `backtest_by_level.csv`, `backtest_by_season.csv`, `backtest_vs_v31.csv`, "
+        "`backtest_forecasts.csv` (every non-campaign forecast with its actual), `validation_results.json`.",
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def print_summary(report: dict) -> None:
+    table = pd.DataFrame(report["by_level"])
+    cols = ["level", "horizon_days", "n", "wape", "wape_budget_known", "wape_run_rate",
+            "wape_seasonal_naive", "coverage", "roas_wape", "roas_coverage"]
+    print()
+    print("=" * 100)
+    print(f"  Rolling-origin backtest: {report['n_origins']} weekly origins, "
+          f"{report['first_origin']} to {report['last_origin']}")
+    print("=" * 100)
+    print(table[cols].round(1).to_string(index=False))
+    if "vs_v31" in report:
+        print("\n  Same origins and series as the v3.1 pipeline:")
+        print(pd.DataFrame(report["vs_v31"]).round(1).to_string(index=False))
+    print("=" * 100)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the AIgnition forecasting bundle")
     parser.add_argument("--data-dir", default=str(ROOT / "data"))
     parser.add_argument("--model-path", default=str(ROOT / "pickle" / "model.pkl"))
-    parser.add_argument("--ablation", action="store_true", help="Run daily vs weekly ablation")
-    parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter tuning ")
-    parser.add_argument("--cv", action="store_true", help="Run 3-fold walk-forward CV ")
+    parser.add_argument("--skip-backtest", action="store_true",
+                        help="Refit only; keep the calibration and backtest of the existing bundle")
     args = parser.parse_args()
+    np.random.seed(RANDOM_SEED)
 
-    # Lock all random state for fully reproducible runs
-    np.random.seed(42)
-    import random as _random
-    _random.seed(42)
+    t0 = time.time()
+    prepared = prepare_data(args.data_dir)
+    hier = prepared.hier
+    print(f"[data] {hier.dates[0].date()} to {hier.origin.date()} | {hier.n_series} series | "
+          f"{len(prepared.cleaned):,} daily rows")
 
-    data_dir = Path(args.data_dir)
-    _, report, panel, type_panel, channel_panel = prepare_data(data_dir, freq="weekly")
-
-    # Enable native channel forecasting
-    channel_panel = channel_panel.copy()
-    channel_panel["campaign_type"] = "TOTAL"
-
-    combined_panel = pd.concat([type_panel, channel_panel], ignore_index=True)
-    combined_panel["model_key"] = combined_panel.apply(lambda r: model_key(r), axis=1)
-
-    bundle, test_df = train_quantile_models(
-        combined_panel,
-        run_optuna=args.optuna,
-        run_cv=args.cv,
-    )
-    bundle.validation_report = report.to_dict()
-    bundle.meta_revenue_assumption = (
-        "conversion_as_revenue" if META_CONVERSION_AS_REVENUE else "meta_excluded"
-    )
-    bundle.holdout_metrics = run_backtest(bundle, test_df)
-    
-    # Step 5: Campaign-level MAE
-    print("[Eval] Running campaign-level evaluation pass...")
-    camp_metrics = evaluate_at_campaign_level(bundle, panel, HOLDOUT_WEEKS)
-    bundle.holdout_metrics.update(camp_metrics)
-
-    # Print real feature importances
-    try:
-        # Explicitly grab Google TOTAL to represent macro portfolio drivers
-        target_key = "google|TOTAL" if "google|TOTAL" in bundle.quantile_models else list(bundle.quantile_models.keys())[0]
-        q50_model = bundle.quantile_models[target_key][30][0.5]
-        
-        importances = q50_model.feature_importance(importance_type='split')
-        print(f"\n[Actual Feature Importances: {target_key}]")
-        imp_df = pd.DataFrame({'Feature': bundle.feature_cols, 'Score': importances}).sort_values(by='Score', ascending=False)
-        print(imp_df.head(15).to_string(index=False))
-    except Exception as e:
-        pass
-
-    docs = ROOT / "docs"
-    docs.mkdir(exist_ok=True)
-    if bundle.holdout_metrics:
-        pd.DataFrame(bundle.holdout_metrics.get("by_type", [])).to_csv(
-            docs / "holdout_by_type.csv", index=False
-        )
-        pd.DataFrame(bundle.holdout_metrics.get("baseline_comparison", [])).to_csv(
-            docs / "baseline_comparison.csv", index=False
-        )
-
-        # Save CV results if available 
-        cv_records = bundle.holdout_metrics.get("cv_results", [])
-        if cv_records:
-            pd.DataFrame(cv_records).to_csv(docs / "cv_results.csv", index=False)
-
-        with open(docs / "validation_results.json", "w") as f:
-            summary = {k: v for k, v in bundle.holdout_metrics.items()
-                       if k not in ("by_type", "cv_results")}
-            json.dump(summary, f, indent=2, default=str)
-
-    if args.ablation:
-        ablation = ablation_daily_vs_weekly(data_dir)
-        ablation.to_csv(docs / "ablation_results.csv", index=False)
-        print(f"Ablation saved to {docs / 'ablation_results.csv'}")
-
-    save_bundle(bundle, args.model_path)
-    hm = bundle.holdout_metrics
-
-    # Results printout - WAPE is primary 
-    print()
-    print("=" * 60)
-    print("  AIgnition v3.1 - Holdout Backtest Results")
-    print("=" * 60)
-    print(f"  Model:           {args.model_path}")
-    print(f"  Holdout weeks:   {HOLDOUT_WEEKS} | predictions: {hm.get('n_predictions', 0)}")
-    print(f"  Filtered rows:   {hm.get('filtered_n', 'N/A')} / {hm.get('n_predictions', 'N/A')}")
-    print(f"  Revenue filter:  >= ${hm.get('revenue_filter_min', 0):,.2f}")
-    print(f"  Spend filter:    >= ${hm.get('spend_filter_min', 0):.2f}")
-    print(f"  ROAS cap:        {ROAS_CAP}x ")
-    print()
-    print("  -- PRIMARY METRIC --")
-    print(f"  WAPE  (P50):     {hm.get('wape_p50', 'N/A'):.2f}%  <- PRIMARY ")
-    print()
-    print("  -- SECONDARY METRICS --")
-    print(f"  SMAPE (P50):     {hm.get('smape_p50', 'N/A'):.2f}%")
-    print(f"  SMAPE (Active):  {hm.get('smape_active_p50', 'N/A'):.2f}%  (P50 > $100)")
-    print(f"  MAPE  (P50):     {hm.get('mape_p50', 'N/A'):.2f}%")
-    print(f"  MAE   (P50):     ${hm.get('mae_p50', 'N/A'):,.2f}  (Group level)")
-    print(f"  Median AE (P50): ${hm.get('median_ae_p50', 'N/A'):,.2f}")
-    print(f"  RMSE  (P50):     ${hm.get('rmse_p50', 'N/A'):,.2f}")
-    
-    print()
-    print("  -- CAMPAIGN LEVEL (Apples-to-Apples) --")
-    if "campaign_level_MAE" in hm:
-        print(f"  Campaign MAE:    ${hm['campaign_level_MAE']:,.2f}")
-        print(f"  Campaign WAPE:   {hm['campaign_level_WAPE']:.2f}%")
-        print(f"  Campaign rows:   {hm['n_campaign_rows']}")
+    if args.skip_backtest:
+        previous = load_bundle(args.model_path)
+        conformal, report = previous["conformal"], previous.get("backtest", {})
     else:
-        print("  Not evaluated")
-    print()
-    print("  -- INTERVAL QUALITY --")
-    print(f"  Coverage P10-P90:{hm.get('coverage_p10_p90', 'N/A'):.1f}%  (target: >=80%)")
-    print(f"  Avg Interval Wid:{hm.get('avg_interval_width', 'N/A'):,.0f}")
-    print()
-    print("  -- BASELINE COMPARISON --")
-    if hm.get("outlier_diagnostics"):
-        print(f"  Top outlier:     {hm['outlier_diagnostics'][0].get('model_key', 'N/A')}")
-    print(f"  Best baseline:   {hm.get('best_baseline')}")
-    print(f"  WAPE improve:    {hm.get('wape_improvement_vs_best_baseline', 0):+.2f} pp vs baseline")
-    print(f"  SMAPE improve:   {hm.get('smape_improvement_vs_best_baseline', 0):+.2f} pp vs baseline")
-    print(f"  Beats baseline:  {hm.get('lightgbm_beats_baseline')}")
-    print("=" * 60)
+        origins = test_origins(hier)
+        if len(origins) < 12:
+            raise SystemExit("Not enough history for a rolling-origin backtest "
+                             "(need roughly 20 months). Use --skip-backtest with an existing bundle.")
+        oos = run_backtest(hier, origins)
+        conformal = fit_conformal(oos)
+        fc = honest_forecasts(oos)
+        report = backtest_report(fc)
+        write_docs(fc, report)
+        print_summary(report)
 
-    # Optuna params if used 
-    if bundle.optuna_best_params:
-        print(f"\n  [Optuna] Tuned params saved to bundle.")
-        print(f"  Best params: {bundle.optuna_best_params}")
-
-    # CV results summary if used 
-    cv_records = hm.get("cv_results", [])
-    if cv_records:
-        cv_df = pd.DataFrame(cv_records)
-        print(f"\n  -- WALK-FORWARD CV --")
-        for _, row in cv_df.iterrows():
-            print(f"  Fold {int(row['fold'])}: WAPE={row['wape']:.2f}% | "
-                  f"SMAPE={row['smape']:.2f}% | Coverage={row['coverage']:.1f}%")
-        print(f"  Mean CV WAPE: {cv_df['wape'].mean():.2f}%")
+    samples = build_samples(hier, training_origins(hier.n_days - 1))
+    core = fit_core(samples)
+    bundle = make_bundle(
+        core, conformal,
+        seasonal_reference=SeasonalReference.from_hierarchy(hier).to_dict(),
+        trained_on={
+            "first_date": str(hier.dates[0].date()),
+            "last_date": str(hier.origin.date()),
+            "n_series": int(hier.n_series),
+            "n_samples": int(core["n_samples"]),
+            "horizons": list(HORIZONS),
+            "meta_revenue_assumption": "conversion_as_revenue" if META_CONVERSION_AS_REVENUE else "meta_excluded",
+            "validation": prepared.report.to_dict(),
+        },
+        backtest=report,
+    )
+    save_bundle(bundle, args.model_path)
+    size_kb = Path(args.model_path).stat().st_size / 1024
+    print(f"[model] {core['n_samples']:,} training rows -> {args.model_path} ({size_kb:,.0f} KB) "
+          f"in {time.time() - t0:.0f}s")
+    for h in HORIZONS:
+        top = core["linear"]["rev"][h].get("top", core["linear"]["rev"][h]["all"])
+        print(f"[model] {h}d  spend elasticity {core['elasticity'][h]['base']:.2f}  |  top-level weights: "
+              f"peak-season analog {top['seas_peak']:.2f}, off-season analog {top['seas_off']:.2f}, "
+              f"7-day momentum {top['mom_r7']:.2f} (revenue) {top['mom_s7']:.2f} (spend)")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings on every platform, or bash fails on a Windows checkout
+*.sh  text eol=lf
+*.bat text eol=crlf
+*.pkl binary
+*.parquet binary

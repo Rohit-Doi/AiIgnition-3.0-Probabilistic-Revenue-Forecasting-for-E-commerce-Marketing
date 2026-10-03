@@ -1,4 +1,4 @@
-"""Prediction entry point for run.sh."""
+"""Prediction entry point for run.sh: features + pickled model -> predictions.csv."""
 
 from __future__ import annotations
 
@@ -11,59 +11,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 from src.config import ROOT
+from src.forecast import forecast, public_columns, to_submission
 from src.model import load_bundle
-from src.pipeline import generate_forecasts
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", default="features.parquet")
     parser.add_argument("--model", default=str(ROOT / "pickle" / "model.pkl"))
     parser.add_argument("--output", default=str(ROOT / "output" / "predictions.csv"))
     args = parser.parse_args()
 
-    type_panel = pd.read_parquet(args.features)
-    channel_path = Path(args.features).with_name("channel_features.parquet")
-    campaign_path = Path(args.features).with_name("campaign_features.parquet")
-    channel_panel = pd.read_parquet(channel_path)
-    campaign_panel = pd.read_parquet(campaign_path)
-
+    feats = pd.read_parquet(args.features)
     bundle = load_bundle(args.model)
-    forecasts = generate_forecasts(
-        bundle, type_panel, channel_panel, campaign_panel
-    )
-
-    # Reformat to match the required submission format exactly
-    # Expected: channel,campaign_type,campaign_name,horizon_days,p10_revenue,p50_revenue,p90_revenue,p10_roas,p50_roas,p90_roas
-    
-    formatted = forecasts.rename(columns={
-        "revenue_p10": "p10_revenue",
-        "revenue_p50": "p50_revenue",
-        "revenue_p90": "p90_revenue",
-        "roas_p10": "p10_roas",
-        "roas_p50": "p50_roas",
-        "roas_p90": "p90_roas",
-    })
-    
-    columns_to_keep = [
-        "channel",
-        "campaign_type",
-        "campaign_name",
-        "horizon_days",
-        "p10_revenue",
-        "p50_revenue",
-        "p90_revenue",
-        "p10_roas",
-        "p50_roas",
-        "p90_roas"
-    ]
-    
-    formatted = formatted[columns_to_keep]
+    fc = forecast(bundle, feats)
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    formatted.to_csv(out, index=False)
-    print(f"Predictions written to {out} ({len(formatted)} rows)")
+    submission = to_submission(fc)
+    if submission[["p10_revenue", "p50_revenue", "p90_revenue"]].isna().any().any():
+        raise ValueError("Forecast contains missing values; refusing to write a partial file.")
+    submission.to_csv(out, index=False)
+    # Same forecasts with spend, drivers and level labels, for the dashboard and analysts.
+    public_columns(fc).to_csv(out.with_name("forecast_detail.csv"), index=False)
+
+    blended = fc[fc["level"] == "blended"]
+    for _, r in blended.iterrows():
+        print(f"  {int(r['horizon_days'])}d blended revenue  P10 {r['revenue_p10']:>12,.0f}  "
+              f"P50 {r['revenue_p50']:>12,.0f}  P90 {r['revenue_p90']:>12,.0f}  |  ROAS P50 {r['roas_p50']:.2f}")
+    print(f"Predictions written to {out} ({len(submission)} rows)")
 
 
 if __name__ == "__main__":
